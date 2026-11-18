@@ -4,7 +4,9 @@
 
 ## 项目定位
 
-我们在 [VoxBase-s2s](https://github.com/GHJ20001017/VoxBase-s2s) 中已经探索了如何在 LLM 的基础上训练一个 Speech-to-Speech 模型。现在，我们希望进一步探索基于离散 Codec Token 的 Masked TTS，希望能够以一个简单直接的方式训练好一个 TTS 模型。
+---
+
+> 在 [VoxBase-s2s](https://github.com/GHJ20001017/VoxBase-s2s) 中，我们曾围绕 LLM 探索 Speech-to-Speech 模型的训练与实现。沿着这条路线继续前行，我们希望将注意力延伸到基于离散 Codec Token 的 Masked TTS，尝试以更清晰、更直接的建模路径，逐步构建一个易于理解、训练与复现的 TTS 模型。
 
 ## 项目介绍
 
