@@ -4,6 +4,8 @@
 
 支持可配置的码本数量（例如 8q、32q）、单卡训练、混合精度、梯度累积、断点续训、TensorBoard 和迭代补全推理。
 
+![VoxBase-TTS 模型概览](assets/voxbase-tts-overview.png)
+
 > 当前推理输出是 **codec token 的 `.pt` 文件，不是 WAV**。仓库尚未集成 codec 编码器/解码器、音频长度预测或完整的音质评测流程；不能直接输入原始参考 WAV，也不能只凭 token 准确率判断语音质量。
 
 ## 1. 项目结构
