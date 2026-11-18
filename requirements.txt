@@ -1,0 +1,9 @@
+# Install a CUDA-compatible PyTorch build for your GPU before these dependencies.
+# Training/model integration tested with torch 2.11.0 and transformers 5.14.1.
+torch>=2.6
+transformers==5.14.1
+pyarrow
+numpy
+PyYAML
+tensorboard
+tqdm

@@ -1,0 +1,22 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Training artifacts and datasets; keep data/ source code tracked
+outputs/
+datasets/
+*.parquet
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+events.out.tfevents.*
+
+# Local secrets and operating-system metadata
+.env
+.env.*
+!.env.example
+.DS_Store
