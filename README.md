@@ -47,53 +47,6 @@ python -m pip check
 
 项目依赖 `transformers==5.14.1`，使用该版本提供的 Qwen3 双向 mask API。依赖文件中声明 `torch>=2.6`，但并不代表所有 PyTorch、CUDA 和 Transformers 组合都经过验证；此前验证过的组合包括 PyTorch 2.11.0 和 CUDA 13.0。
 
-### 95 服务器环境
-
-项目曾在 95 服务器的独立 venv 中验证：
-
-```bash
-source /gpu3/guhj/envs/voxbase-tts/bin/activate
-cd /gpu3/guhj/VoxBase-TTS
-```
-
-该环境不是 Conda 环境。已验证 Python 3.12.12、PyTorch 2.11.0+cu130、Transformers 5.14.1、NumPy 2.4.3、TensorBoard 2.21.0 和 tqdm 4.70.1。A800 上完成过小模型 FP32、FP16、BF16 前向/反向及 AdamW 更新检查；这不等于完整模型长序列训练的显存或音质保证。
-
-## 数据集
-
-数据需要预先转换为包含离散 codec tokens 的 Parquet 文件。训练、验证和测试分别使用独立 split 目录：
-
-```text
-tts_dataset/
-├── train/
-│   └── .../*.parquet
-├── validation/
-│   └── .../*.parquet
-└── test/
-    └── .../*.parquet
-```
-
-读取器会递归搜索传入 split 根目录中的 Parquet 文件，并排除 `indexes/`；**不会自动追加或优先读取 `shards/`**。数据按 row group 惰性读取，并使用有界缓存，不会一次性把全部 codes 加载到内存。
-
-### 核心字段
-
-| 字段 | 含义 |
-| --- | --- |
-| `sample_id` | 样本标识 |
-| `text` | 音频对应文本 |
-| `codes` | 二维整数数组，形状必须为 `[Q, T]` |
-| `num_codebooks` | 码本数量 `Q` |
-| `num_frames` | 音频 token 帧数 `T` |
-| `dataset` | 参考配对时使用的数据集标识 |
-| `speaker_id` | 参考配对时使用的说话人标识 |
-
-有效 codec 索引范围为 `[0, K)`。原始数据不应写入音频 MASK 或 padding；数据中的 `Q` 必须与模型配置一致。
-
-### 参考样本配对
-
-`reference_prob` 控制使用参考条件的概率。参考样本仅在同一 split 内配对，并按 release、dataset、speaker 和码本数量分组；候选样本会排除相同 `sample_id`。
-
-缺少有效 speaker、没有合适候选，或候选不满足码本条件时，样本不使用参考条件，不会退化为自身样本或其他说话人的样本。即使 `reference_prob: 1.0`，也不表示每条样本一定存在参考样本。
-
 ## 训练
 
 以 [configs/train.yaml](configs/train.yaml) 为起点，并根据实际机器修改数据路径和输出路径。仓库中的数据路径只是开发环境示例，不代表数据已经随代码发布。
