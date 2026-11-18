@@ -29,8 +29,6 @@ VoxBase-TTS 是一个面向学习、研究和工程验证的文本到语音实�
   <img src="assets/voxbase-tts-overview.png" alt="VoxBase-TTS 模型概览" width="55%">
 </p>
 
-上图用于概括整体数据流，实际实现以代码为准：
-
 - **文本输入**：目标文本经过 Qwen tokenizer 和文本 embedding，不做 G2P 预处理。
 - **参考条件**：可选的参考文本和对齐 codec tokens 会放在目标条件之前；参考部分不参与目标音频的 MASK 损失。
 - **音频表示**：每个 codebook 使用独立的可训练 embedding 和分类头。设码本数量为 `Q`、类别数为 `K`，每张 embedding 表包含 `K + 1` 行，额外一行用于音频 MASK。
