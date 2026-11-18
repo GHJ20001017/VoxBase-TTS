@@ -1,76 +1,94 @@
 # VoxBase-TTS
 
-基于 **Qwen3 双向注意力主干**的 Masked Codec Token TTS 实验实现。模型以文本和可选的参考语音 codec tokens 为条件，通过预测被 MASK 的离散音频 token 学习文本到语音表示的映射。
+<p align="center">
+  <img src="assets/voxbase-tts-overview.png" alt="VoxBase-TTS 模型概览" width="55%">
+</p>
 
-支持可配置的码本数量（例如 8q、32q）、单卡训练、混合精度、梯度累积、断点续训、TensorBoard 和迭代补全推理。
+<p align="center"><strong>基于离散 Codec Token 的 Masked TTS 实验项目</strong></p>
 
-![VoxBase-TTS 模型概览](assets/voxbase-tts-overview.png)
+## 项目定位
 
-> 当前推理输出是 **codec token 的 `.pt` 文件，不是 WAV**。仓库尚未集成 codec 编码器/解码器、音频长度预测或完整的音质评测流程；不能直接输入原始参考 WAV，也不能只凭 token 准确率判断语音质量。
+VoxBase-TTS 是一个面向学习、研究和工程验证的文本到语音实验项目。项目以 **Qwen3-0.6B** 为语言建模主干，将文本、可选的参考文本与参考语音 codec tokens 组织为统一序列，并通过 Masked Codec Token 预测学习目标语音的离散表示。
 
-## 1. 项目结构
+项目当前聚焦于 **codec token 建模与可复现训练流程**，而不是完整的端到端音频产品。仓库提供数据读取、模型训练、断点恢复、TensorBoard、离线 token 推理和测试代码，方便逐步理解从文本条件到离散语音表示生成的完整过程。
+
+> 当前推理输出是 codec token 的 `.pt` 文件，不是 WAV。仓库尚未集成 codec 编码器/解码器、自动时长预测或完整的主观音质评测流程。
+
+## 项目介绍
+
+传统 TTS 通常在文本、声学特征和波形之间采用多阶段流水线；VoxBase-TTS 选择先建模离散音频 token，将每一帧的多个 codebook token 聚合到同一个 Transformer 位置，再由独立预测头恢复各 codebook 的类别。
+
+这种设计的目标是：
+
+- 复用 Qwen3 的文本表示和上下文建模能力；
+- 使用 Masked Token Learning 训练离散语音表示，而不是逐 token 自回归生成；
+- 通过可选的参考文本和参考 codec tokens 支持说话人或表达条件的实验；
+- 保持训练、验证、断点恢复和指标记录过程可检查、可复现。
+
+当前实现仍属于实验阶段。token 准确率只能反映离散类别的命中情况，不能直接等价为语音自然度、音色相似度或可懂度。
+
+## 模型结构
+
+上方概览图用于概括整体数据流，实际实现以代码为准：
+
+- **文本输入**：目标文本经过 Qwen tokenizer 和文本 embedding，不做 G2P 预处理。
+- **参考条件**：可选的参考文本和对齐 codec tokens 会放在目标条件之前；参考部分不参与目标音频的 MASK 损失。
+- **音频表示**：每个 codebook 使用独立的可训练 embedding 和分类头。设码本数量为 `Q`、类别数为 `K`，每张 embedding 表包含 `K + 1` 行，额外一行用于音频 MASK。
+- **帧内聚合**：同一帧的 `Q` 个音频 embedding 求和并除以 `sqrt(Q)`，因此 32q 不会让每帧占用 32 个 Transformer 序列位置。
+- **双向主干**：Qwen3 主干使用双向注意力，支持 `sdpa` 和 `eager` 两种 attention backend；不依赖 Flash Attention 2。
+- **Masked 预测**：训练时只在真实目标 `Q × T` 位置中采样 MASK，不 MASK padding，也不要求整帧一起 MASK。MASK 比例会作为时间条件加入目标音频 embedding。
+- **多码本输出**：共享主干特征经过 `RMSNorm → Linear → SiLU` 后，由每个 codebook 的独立分类头预测 `K` 个类别；各分类头共享特征，但不共享 logits，也不按 codebook 自回归。
+
+### 图示说明
+
+图中方块和箭头是结构示意，不代表实际 tokenizer 输出、音频帧率或 codec 的具体实现细节。要得到可播放音频，还需要接入与训练数据兼容的 codec 解码器。
+
+## 项目结构
 
 ```text
 VoxBase-TTS/
-├── configs/train.yaml          # 模型、数据、训练、MASK 和评估配置
-├── data/tts_data.py            # Parquet 惰性读取、参考配对与 batch padding
+├── assets/
+│   └── voxbase-tts-overview.png  # 模型概览图
+├── configs/train.yaml             # 模型、数据、训练和 MASK 配置
+├── data/tts_data.py               # Parquet 读取、参考配对和 batch padding
 ├── model/
-│   ├── bidirectional_qwen3.py  # Qwen3 双向注意力主干与 TTS 特殊标记
-│   └── VoxBase_TTS.py          # 音频 embedding、MASK 训练与迭代生成
-├── train.py                   # 单进程训练、验证、checkpoint 与日志
-├── infer.py                   # 从训练 checkpoint 离线生成 codec tokens
-├── scripts/train.sh           # 训练启动入口
-├── scripts/infer.sh           # 推理启动入口
-├── tests/                     # 小模型离线测试与可选真实数据测试
-└── requirements.txt
+│   ├── bidirectional_qwen3.py     # Qwen3 双向注意力主干
+│   └── VoxBase_TTS.py             # 音频 embedding、MASK 训练和迭代生成
+├── train.py                       # 训练、验证、checkpoint 和日志
+├── infer.py                       # 离线生成 codec tokens
+├── scripts/
+│   ├── train.sh                   # 训练启动入口
+│   └── infer.sh                   # 推理启动入口
+├── tests/                         # 单元测试和可选真实数据测试
+├── requirements.txt
+└── README.md
 ```
 
-## 2. 模型如何工作
+## 环境安装
 
-### 输入与主干
-
-- 文本使用 Qwen tokenizer 和文本 embedding，不做 G2P 预处理。
-- 默认加载 `Qwen/Qwen3-0.6B`，将主干注意力改成双向注意力；支持 `sdpa`、`eager`，不支持 Flash Attention 2。
-- 每个码本有独立、可训练的音频 embedding。设码本数量为 `Q`、每个码本类别数为 `K`，每张 embedding 表包含 `K + 1` 行，最后一行是音频 MASK。
-- 同一音频帧的 `Q` 个 embedding 求和并除以 `sqrt(Q)`，得到一个 Transformer 位置。因此，32q 并不是每帧占用 32 个序列位置。
-- 音频 MASK 不加入 Qwen 文本词表。文本/参考/音频的边界通过专用 TTS 标记表示。
-- 可选参考条件包括参考文本及其对齐的干净 codec tokens；参考部分不参与目标 MASK 预测损失。
-
-### MASK 训练与预测头
-
-每次 forward 为每个样本采样 MASK 比例，在真实的 `Q × T` 目标位置中随机选取对应数量的位置，不 MASK padding，也不要求整帧一起 MASK。
-
-目标音频 embedding 在进入主干前加上由 MASK 比例生成的时间条件。主干输出经过共享的 `RMSNorm → Linear → SiLU` 特征变换，再由每个码本的独立分类头预测 `K` 类索引。各分类头共享特征，但不共享类别 logits，也不按码本自回归生成。
-
-只在被 MASK 的位置计算交叉熵；分类投影与交叉熵使用 FP32。默认训练整个主干，也可以通过 `model.freeze_backbone` 冻结主干。
-
-## 3. 环境安装
-
-先安装适配本机 GPU/驱动的 CUDA 版 PyTorch，再安装项目依赖：
+请先安装与本机 GPU 驱动匹配的 CUDA 版 PyTorch，再安装项目依赖：
 
 ```bash
 python -m pip install -r requirements.txt
 python -m pip check
 ```
 
-项目固定 `transformers==5.14.1`，依赖该版本的 Qwen3 与双向 mask API，不建议随意降级。已验证过的 PyTorch 版本为 2.11.0；`torch>=2.6` 是依赖声明，不代表所有版本组合都经过验证。
+项目依赖 `transformers==5.14.1`，使用该版本提供的 Qwen3 双向 mask API。依赖文件中声明 `torch>=2.6`，但并不代表所有 PyTorch、CUDA 和 Transformers 组合都经过验证；此前验证过的组合包括 PyTorch 2.11.0 和 CUDA 13.0。
 
-### 95 服务器的专用环境
+### 95 服务器环境
 
-此前已在 95 创建独立的 **venv** 环境，使用：
+项目曾在 95 服务器的独立 venv 中验证：
 
 ```bash
 source /gpu3/guhj/envs/voxbase-tts/bin/activate
 cd /gpu3/guhj/VoxBase-TTS
 ```
 
-它不是 Conda 环境，不使用 `conda activate`。也可以不激活，直接使用 `/gpu3/guhj/envs/voxbase-tts/bin/python`。
+该环境不是 Conda 环境。已验证 Python 3.12.12、PyTorch 2.11.0+cu130、Transformers 5.14.1、NumPy 2.4.3、TensorBoard 2.21.0 和 tqdm 4.70.1。A800 上完成过小模型 FP32、FP16、BF16 前向/反向及 AdamW 更新检查；这不等于完整模型长序列训练的显存或音质保证。
 
-已验证环境包括 Python 3.12.12、PyTorch 2.11.0+cu130、Transformers 5.14.1、NumPy 2.4.3 和 TensorBoard 2.21.0。A800 上通过了小模型 FP32/FP16/BF16 前向、反向及 AdamW 更新检查；这不等于验证了完整模型长序列训练的显存和音质。
+## 数据集
 
-## 4. 数据格式
-
-数据必须预先转换为 Parquet 中的离散 codec tokens。训练、验证、测试分别提供独立目录：
+数据需要预先转换为包含离散 codec tokens 的 Parquet 文件。训练、验证和测试分别使用独立 split 目录：
 
 ```text
 tts_dataset/
@@ -82,33 +100,31 @@ tts_dataset/
     └── .../*.parquet
 ```
 
-读取器递归搜索给定 split 目录中的 Parquet（排除 `indexes/`），**不要求也不会自动追加 `shards/`**。使用 row group 惰性读取和有界缓存，而非一次把全部音频 codes 加载到内存。
+读取器会递归搜索传入 split 根目录中的 Parquet 文件，并排除 `indexes/`；**不会自动追加或优先读取 `shards/`**。数据按 row group 惰性读取，并使用有界缓存，不会一次性把全部 codes 加载到内存。
 
-核心字段：
+### 核心字段
 
 | 字段 | 含义 |
-|---|---|
+| --- | --- |
 | `sample_id` | 样本标识 |
 | `text` | 音频对应文本 |
-| `codes` | 二维整数数组，形状为 `[Q, T]`，不是 `[T, Q]` |
+| `codes` | 二维整数数组，形状必须为 `[Q, T]` |
 | `num_codebooks` | 码本数量 `Q` |
 | `num_frames` | 音频 token 帧数 `T` |
-| `dataset` | 用于参考配对分组的数据集标识 |
-| `speaker_id` | 用于参考配对的说话人标识 |
+| `dataset` | 参考配对时使用的数据集标识 |
+| `speaker_id` | 参考配对时使用的说话人标识 |
 
-有效 codec 索引范围为 `[0, K)`，不应在原始数据里写入音频 MASK 或 padding。`codes` 的码本数量必须与模型配置一致。
+有效 codec 索引范围为 `[0, K)`。原始数据不应写入音频 MASK 或 padding；数据中的 `Q` 必须与模型配置一致。
 
 ### 参考样本配对
 
-`reference_prob` 控制使用参考条件的概率。配对限制在同一 split 内，并按 release、dataset、speaker 和码本数量分组；从其他有效样本中选择，排除相同 `sample_id`。
+`reference_prob` 控制使用参考条件的概率。参考样本仅在同一 split 内配对，并按 release、dataset、speaker 和码本数量分组；候选样本会排除相同 `sample_id`。
 
-缺失/无效 speaker 或没有合适候选时不使用参考，不退化为自身或其他说话人的样本。只有确认存在候选后才进行概率采样。`reference_prob: 1.0` 也不意味着每条样本必然有参考，更不意味着每轮固定使用同一参考。
+缺少有效 speaker、没有合适候选，或候选不满足码本条件时，样本不使用参考条件，不会退化为自身样本或其他说话人的样本。即使 `reference_prob: 1.0`，也不表示每条样本一定存在参考样本。
 
-## 5. 训练配置与启动
+## 训练
 
-以 [configs/train.yaml](configs/train.yaml) 为起点。**仓库中的数据路径是原机器路径，必须按实际数据位置修改**，不要假定数据已迁移到项目目录。
-
-以下是配置片段，应合并到现有配置中；路径为示例：
+以 [configs/train.yaml](configs/train.yaml) 为起点，并根据实际机器修改数据路径和输出路径。仓库中的数据路径只是开发环境示例，不代表数据已经随代码发布。
 
 ```yaml
 model:
@@ -138,22 +154,22 @@ training:
   tensorboard: true
 ```
 
-首次训练需要能够访问预训练模型，或将 `pretrained_name_or_path` 指向已准备好的本地模型目录。数据及预训练权重准备好后，在仓库根目录启动：
+启动训练：
 
 ```bash
 bash scripts/train.sh configs/train.yaml
 ```
 
-也可以直接运行，或覆盖新训练的 epoch 数：
+也可以直接运行并覆盖 epoch 数：
 
 ```bash
 python train.py --config configs/train.yaml
 bash scripts/train.sh configs/train.yaml --epochs 2
 ```
 
-### 指定一张 GPU
+程序只支持单进程、单 GPU，不支持 DDP；不要使用 `torchrun` 启动。
 
-例如只让程序使用 `nvidia-smi` 中编号为 2 的卡：
+### 指定 GPU
 
 ```bash
 CUDA_VISIBLE_DEVICES=2 \
@@ -161,92 +177,72 @@ PYTHON_BIN=/gpu3/guhj/envs/voxbase-tts/bin/python \
 bash scripts/train.sh configs/train.yaml
 ```
 
-程序内部将这张卡视为 `cuda:0`，配置保持 `device: cuda` 即可。该设置不独占显卡，启动前仍应检查占用。当前训练器只支持单进程/单卡，不支持 DDP，不要使用多进程 `torchrun` 启动。
+程序内部会将当前可见的显卡视为 `cuda:0`，配置保持 `device: cuda` 即可。`CUDA_VISIBLE_DEVICES` 不会独占显卡，启动前仍需检查显存占用。
 
-### Batch、梯度累积与学习率
+### Batch、学习率和长度边界
 
-完整累积组的有效样本 batch size 为：
+有效 batch size 为：
 
 ```text
 有效 BS = batch_size × gradient_accumulation_steps
 ```
 
-例如 `128 × 16 = 2048`。进度条按实际 DataLoader batch 推进，`step` 则按成功的优化器更新推进；每个 epoch 最后的不足整组部分也会更新。loss 和梯度按整组被 MASK 的 token 总数归一化，而不是简单平均每个样本的 loss。
+学习率对所有可训练参数统一生效，采用线性 warmup 后接余弦衰减；默认峰值为 `1e-4`，warmup 为 500 个 optimizer updates。loss 和梯度按累积组中被 MASK 的 token 总数归一化。AMP 溢出跳过更新时，不推进 optimizer step 和学习率调度。
 
-学习率对所有可训练参数统一生效，采用 **线性 warmup → 余弦衰减**，目前没有主干/新模块分组学习率。默认峰值 `1e-4`，warmup 为 500 个优化器更新步：第 1 次更新用 `2e-7`，第 10 次用 `2e-6`，第 500 次用 `1e-4`。之后根据全部 epochs 的预计更新步数做余弦衰减。若总更新数不足 warmup，就不会进入衰减阶段。
+`masking.max_text_tokens` 和 `masking.max_sequence_length` 是拒绝超限样本的边界。项目不会静默截断或自动过滤超长样本；打包长度包括参考文本/音频、目标文本/音频和边界标记。
 
-AMP 溢出跳过更新时，不推进 optimizer step 和学习率调度。训练中的权重保持 FP32，`fp16`/`bf16` 控制 CUDA autocast；CPU 训练使用 FP32。批量大小和长度上限不是显存保证，长样本仍可能 OOM。
+## TensorBoard 与训练进度
 
-`masking.max_text_tokens` 和 `masking.max_sequence_length` 是报错边界：超限会拒绝样本，**不会静默截断或自动过滤**。打包长度包括参考文本/音频、目标文本/音频及边界标记。
+终端使用 tqdm 显示每个 epoch 的 batch 进度、ETA、速度、loss、准确率、学习率、optimizer step 和梯度范数。
 
-## 6. 进度条、指标与 TensorBoard
-
-终端进度条显示 epoch、batch 完成量、耗时、ETA、速度，以及最新优化器更新对应的 `loss`、`acc`、`lr`、`step`、`grad`。
-
-- **loss**：被 MASK 目标位置的平均交叉熵。
-- **acc**：在被 MASK 的位置，分类头 `argmax` 索引与真实 codebook 索引完全相等的比例。跨样本/码本按 token 汇总，不要求整帧的全部码本同时正确。
-- **grad**：梯度裁剪前的全局梯度范数。
-- 训练显示的是最近一次累积组的指标，不是整个 epoch 的累计指标。
-- 验证指标汇总本轮评估实际读取的 batch。默认每 500 个更新步及 epoch 结束时验证，最多评估 50 个 batch；训练过程不读取 test split。
-
-TensorBoard 默认开启，日志目录为 `<output_dir>/tensorboard`：
+TensorBoard 默认开启，日志位于 `<output_dir>/tensorboard`：
 
 ```bash
 tensorboard --logdir outputs/tts/tensorboard --host 127.0.0.1 --port 6006
 ```
 
-远端运行时需将远端的 `127.0.0.1:6006` 转发到本机，再在本机打开 <http://127.0.0.1:6006>。若使用菜单式跳板机进入目标服务器，SSH 转发不一定跟随菜单到目标机，需要真正连接目标服务器的转发通道。
+记录的主要指标包括：
 
-在 Scalars 中查看：
+- `train/loss`、`validation/loss`：被 MASK 目标位置的平均交叉熵；
+- `train/accuracy`、`validation/accuracy`：被 MASK 位置的 codebook 索引命中率；
+- `train/learning_rate`：当前 optimizer step 使用的学习率；
+- `train/grad_norm`：梯度裁剪前的全局范数；
+- `train/num_masked`、`validation/num_masked`：统计中的 MASK token 数量。
 
-| 曲线 | 含义 |
-|---|---|
-| `train/loss`、`validation/loss` | 训练/验证 loss |
-| `train/accuracy`、`validation/accuracy` | 训练/验证 MASK token 准确率 |
-| `train/learning_rate` | 当前记录对应更新实际使用的学习率 |
-| `train/grad_norm` | 裁剪前梯度范数 |
-| `train/epoch` | 从 0 开始的 epoch 编号；终端显示从 1 开始 |
-| `train/num_masked`、`validation/num_masked` | 对应统计中的 MASK token 数 |
+`acc` 是离散类别的精确命中率，不是语音质量指标。设置 `training.tensorboard: false` 可以关闭 TensorBoard。
 
-横轴为优化器 step。TensorBoard 准确率存为 0～1 的比例，终端显示百分比。默认在第 1 步及每 `training.log_every: 10` 步写训练指标，验证时写验证指标。设 `training.tensorboard: false` 可以关闭。
+## Checkpoint 与断点续训
 
-例如 K=2048 时，均匀随机猜测的准确率约为 `0.0488%`。token 准确率只是精确命中率，不等同于音频质量、自然度或可懂度。
-
-## 7. Checkpoint、续训与测试集评估
-
-训练输出目录包含：
+训练输出通常包括：
 
 ```text
 outputs/tts/
-├── last.pt                # 最近一次保存的训练状态
-├── best.pt                # 验证 loss 改善时保存
-├── backbone_config.json   # 离线恢复模型结构所需
-├── tokenizer/             # 含 TTS 标记的 tokenizer
-└── tensorboard/           # 默认开启的事件日志
+├── last.pt
+├── best.pt
+├── backbone_config.json
+├── tokenizer/
+└── tensorboard/
 ```
 
-`last.pt` 不是每一步都保存：按 `save_every`、验证改善及 epoch 结束等时机更新。checkpoint 包含模型、优化器、scheduler、AMP scaler、配置、数据顺序和 RNG 状态。
+恢复训练：
 
 ```bash
-# 恢复相同训练任务
 bash scripts/train.sh configs/train.yaml --resume outputs/tts/last.pt
+```
 
-# 显式评估 test split
+测试集评估：
+
+```bash
 bash scripts/train.sh configs/train.yaml --resume outputs/tts/best.pt --test-only
 ```
 
-注意：
+断点恢复会保存模型、优化器、scheduler、AMP scaler、配置、数据顺序和随机数状态。严格恢复要求影响优化和数据重放的设置保持一致，包括模型、数据、MASK、batch size、梯度累积、学习率、warmup、epoch 数和精度等。恢复 epoch 中途可能需要重放已跳过的 batch，以恢复参考采样和 RNG 状态。
 
-- 新训练拒绝覆盖非空输出目录。恢复要求 `output_dir` 与 checkpoint 所在目录一致。
-- 严格续训要求模型、数据、MASK 配置及影响优化/重放的参数保持一致，包括 batch size、梯度累积、学习率、warmup、epochs、精度等；不能只改 YAML 就在原 checkpoint 上更换这些设置。
-- epoch 中途恢复会重放跳过的 batch 以恢复参考采样等 RNG 流，因此恢复初期可能有等待时间。应保持数据内容、软件、设备和 worker 设置不变；不保证 CUDA 跨平台逐位一致。
-- TensorBoard 恢复时清除恢复点之后的过期曲线。已经运行的进程不会因编辑 YAML 或源码自动更新。
-- 旧 `max_steps` checkpoint 不支持当前 epoch 恢复机制；不兼容模型结构的旧权重也不能严格加载。
-- **只加载可信 checkpoint**：训练 checkpoint 使用 `torch.load(weights_only=False)`，不可信 pickle 可能执行任意代码。
+只加载可信 checkpoint：训练 checkpoint 使用 `torch.load(weights_only=False)`，不可信 pickle 文件可能执行任意代码。
 
-## 8. 切换 8 码本训练
+## 切换 8q 训练
 
-不需要修改模型代码。在一份独立配置中设置：
+8q 和 32q 使用相同的模型代码，但必须使用匹配的数据和新的输出目录：
 
 ```yaml
 model:
@@ -262,13 +258,11 @@ training:
   output_dir: outputs/tts_8q
 ```
 
-`codebook_size` 是每个码本的类别数量，不是码本数量；只有数据的类别数变化时才改它。目标和参考 codes 都必须为 `[8, T]`，代码不会自动从 32q 截取前 8q。使用新输出目录重新训练，不要用 32q checkpoint 做 `--resume`。
+目标和参考 `codes` 都必须为 `[8, T]`。代码不会自动从 32q 截取前 8q；不要使用 32q checkpoint 恢复 8q 训练。由于多码本在帧内聚合，8q 不会简单地使 Transformer 序列长度变为 32q 的四分之一，速度和显存变化需要实测。
 
-由于多码本在每帧内聚合，32q 改成 8q 不会使 Transformer 序列长度变成四分之一，整体速度和显存变化需要实测。
+## 推理：生成 codec tokens
 
-## 9. 推理：文本生成 codec tokens
-
-推理需要同目录下的训练 checkpoint、`backbone_config.json` 和 `tokenizer/`，不需要重新下载预训练主干。必须显式指定目标音频 token 帧数：
+推理需要训练输出目录中的 checkpoint、`backbone_config.json` 和 `tokenizer/`：
 
 ```bash
 bash scripts/infer.sh \
@@ -278,9 +272,7 @@ bash scripts/infer.sh \
   --output generated_codes.pt
 ```
 
-默认 CPU/FP32。GPU 推理可加 `--device cuda --precision fp16`，并用 `CUDA_VISIBLE_DEVICES` 选择显卡。
-
-可选参考条件必须同时提供 codes 文件和对齐文本：
+GPU 推理示例：
 
 ```bash
 CUDA_VISIBLE_DEVICES=2 bash scripts/infer.sh \
@@ -295,32 +287,35 @@ CUDA_VISIBLE_DEVICES=2 bash scripts/infer.sh \
   --output generated_with_reference.pt
 ```
 
-参考 `.pt` 可以是整数 Tensor `[Q, R]`，或包含 `codes` Tensor 的字典。codec 索引必须在 `[0, K)`。输出父目录须已存在，已有输出文件不会被覆盖。
+生成从全部 MASK 开始，逐轮填充尚未接受的位置；置信度达到阈值的位置会被固定，最后一轮会强制填完剩余位置。输出是整数 codec tokens，形状为 `[Q, T]`，不会自动解码成 WAV。帧数到时长的换算取决于数据所使用的 codec 帧率。
 
-生成从全部 MASK 开始，只预测尚未填充的位置；置信度达到阈值则接受并固定，不再重预测已接受位置。全部填满时提前结束，最后一轮强制填完剩余位置。默认阈值 0.8、最多 16 轮；置信度不是正确性的保证，增加轮数也不保证提高音质。
+## 测试
 
-输出字段：
-
-| 字段 | 内容 |
-|---|---|
-| `codes` | 最终整数 codec tokens，形状 `[Q, T]` |
-| `confidence` | 对应预测概率 |
-| `below_threshold` | 最终置信度低于阈值的位置 |
-| `forced_mask` | 最后一轮强制填充的位置 |
-| `num_steps` | 实际迭代轮数 |
-| `remaining_history` | 未填充位置数量的变化记录 |
-| `text`、`num_frames` | 目标文本与指定帧数 |
-
-帧数到时长的换算依赖数据所用 codec 的帧率，项目不会自动推断时长。要得到可播放的音频，需另行接入与训练数据兼容的 codec 解码器。
-
-## 10. 测试与能力边界
-
-在安装好依赖的环境、仓库根目录执行：
+在依赖完整的环境中运行：
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -v
 ```
 
-测试覆盖小模型双向注意力、数据与参考配对、MASK 计数、训练重放、AMP 溢出处理、TensorBoard、进度条和离线推理等。真实数据测试需要显式设置 `TTS_TEST_DATA_DIR`，默认跳过。
+测试覆盖：
 
-目前没有多卡 DDP、自动时长预测、WAV 编解码链路或已验证的主观音质结论。不要把小模型测试通过、初始 loss 下降或单个 token 指标当作完整 TTS 系统质量验收。
+- Qwen3 双向注意力和特殊标记；
+- codec 数据读取、row-group 缓存和参考配对；
+- MASK 采样、codebook 预测和迭代生成；
+- 训练重放、AMP 溢出、checkpoint 和严格恢复；
+- tqdm 进度条、TensorBoard 和离线推理。
+
+真实数据测试需要显式设置 `TTS_TEST_DATA_DIR`，否则默认跳过。
+
+## 当前边界
+
+当前版本尚未提供：
+
+- 多卡 DDP 训练；
+- 自动音频时长预测；
+- WAV 编码和解码链路；
+- 完整的主观音质、自然度和可懂度评测；
+- 已验证的长序列完整模型显存基准；
+- 随仓库发布的数据集、预训练权重或训练输出。
+
+因此，小模型测试通过、loss 下降或单个 token 指标改善，都不能单独作为完整 TTS 系统质量验收。
