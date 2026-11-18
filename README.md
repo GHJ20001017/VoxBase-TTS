@@ -45,10 +45,6 @@ python -m pip install -r requirements.txt
 python -m pip check
 ```
 
-项目依赖 `transformers==5.14.1`，使用该版本提供的 Qwen3 双向 mask API。依赖文件中声明 `torch>=2.6`，但并不代表所有 PyTorch、CUDA 和 Transformers 组合都经过验证；此前验证过的组合包括 PyTorch 2.11.0 和 CUDA 13.0。
-
-## 训练
-
 以 [configs/train.yaml](configs/train.yaml) 为起点，并根据实际机器修改数据路径和输出路径。仓库中的数据路径只是开发环境示例，不代表数据已经随代码发布。
 
 ```yaml
