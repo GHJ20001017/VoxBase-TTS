@@ -2,9 +2,9 @@
   <img src="assets/voxbase_tts_brand_transparent.png" alt="VoxBase-TTS" width="80%">
 </p>
 
-# VoxBase-TTS
+## 项目定位
 
-<p align="center"><strong>基于离散 Codec Token 的 Masked TTS 实验项目</strong></p>
+我们在 [VoxBase-s2s](https://github.com/GHJ20001017/VoxBase-s2s) 中已经探索了如何在 LLM 的基础上训练一个 Speech-to-Speech 模型。现在，我们希望进一步探索基于离散 Codec Token 的 Masked TTS，希望能够以一个简单直接的方式训练好一个 TTS 模型。
 
 ## 项目介绍
 
