@@ -1,20 +1,16 @@
-# VoxBase-TTS
-
 <p align="center">
-  <img src="assets/voxbase-tts-overview.png" alt="VoxBase-TTS 模型概览" width="55%">
+  <img src="assets/voxbase_tts_brand_transparent.png" alt="VoxBase-TTS" width="80%">
 </p>
+
+# VoxBase-TTS
 
 <p align="center"><strong>基于离散 Codec Token 的 Masked TTS 实验项目</strong></p>
 
-## 项目定位
+## 项目介绍
 
 VoxBase-TTS 是一个面向学习、研究和工程验证的文本到语音实验项目。项目以 **Qwen3-0.6B** 为语言建模主干，将文本、可选的参考文本与参考语音 codec tokens 组织为统一序列，并通过 Masked Codec Token 预测学习目标语音的离散表示。
 
 项目当前聚焦于 **codec token 建模与可复现训练流程**，而不是完整的端到端音频产品。仓库提供数据读取、模型训练、断点恢复、TensorBoard、离线 token 推理和测试代码，方便逐步理解从文本条件到离散语音表示生成的完整过程。
-
-> 当前推理输出是 codec token 的 `.pt` 文件，不是 WAV。仓库尚未集成 codec 编码器/解码器、自动时长预测或完整的主观音质评测流程。
-
-## 项目介绍
 
 传统 TTS 通常在文本、声学特征和波形之间采用多阶段流水线；VoxBase-TTS 选择先建模离散音频 token，将每一帧的多个 codebook token 聚合到同一个 Transformer 位置，再由独立预测头恢复各 codebook 的类别。
 
@@ -27,9 +23,15 @@ VoxBase-TTS 是一个面向学习、研究和工程验证的文本到语音实�
 
 当前实现仍属于实验阶段。token 准确率只能反映离散类别的命中情况，不能直接等价为语音自然度、音色相似度或可懂度。
 
+> 当前推理输出是 codec token 的 `.pt` 文件，不是 WAV。仓库尚未集成 codec 编码器/解码器、自动时长预测或完整的主观音质评测流程。
+
 ## 模型结构
 
-上方概览图用于概括整体数据流，实际实现以代码为准：
+<p align="center">
+  <img src="assets/voxbase-tts-overview.png" alt="VoxBase-TTS 模型概览" width="55%">
+</p>
+
+上图用于概括整体数据流，实际实现以代码为准：
 
 - **文本输入**：目标文本经过 Qwen tokenizer 和文本 embedding，不做 G2P 预处理。
 - **参考条件**：可选的参考文本和对齐 codec tokens 会放在目标条件之前；参考部分不参与目标音频的 MASK 损失。
@@ -48,7 +50,8 @@ VoxBase-TTS 是一个面向学习、研究和工程验证的文本到语音实�
 ```text
 VoxBase-TTS/
 ├── assets/
-│   └── voxbase-tts-overview.png  # 模型概览图
+│   ├── voxbase_tts_brand_transparent.png  # 项目品牌图
+│   └── voxbase-tts-overview.png           # 模型概览图
 ├── configs/train.yaml             # 模型、数据、训练和 MASK 配置
 ├── data/tts_data.py               # Parquet 读取、参考配对和 batch padding
 ├── model/
