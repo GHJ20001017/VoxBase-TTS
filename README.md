@@ -39,32 +39,6 @@ VoxBase-TTS 是一个面向学习、研究和工程验证的文本到语音实�
 - **Masked 预测**：训练时只在真实目标 `Q × T` 位置中采样 MASK，不 MASK padding，也不要求整帧一起 MASK。MASK 比例会作为时间条件加入目标音频 embedding。
 - **多码本输出**：共享主干特征经过 `RMSNorm → Linear → SiLU` 后，由每个 codebook 的独立分类头预测 `K` 个类别；各分类头共享特征，但不共享 logits，也不按 codebook 自回归。
 
-### 图示说明
-
-图中方块和箭头是结构示意，不代表实际 tokenizer 输出、音频帧率或 codec 的具体实现细节。要得到可播放音频，还需要接入与训练数据兼容的 codec 解码器。
-
-## 项目结构
-
-```text
-VoxBase-TTS/
-├── assets/
-│   ├── voxbase_tts_brand_transparent.png  # 项目品牌图
-│   └── voxbase-tts-overview.png           # 模型概览图
-├── configs/train.yaml             # 模型、数据、训练和 MASK 配置
-├── data/tts_data.py               # Parquet 读取、参考配对和 batch padding
-├── model/
-│   ├── bidirectional_qwen3.py     # Qwen3 双向注意力主干
-│   └── VoxBase_TTS.py             # 音频 embedding、MASK 训练和迭代生成
-├── train.py                       # 训练、验证、checkpoint 和日志
-├── infer.py                       # 离线生成 codec tokens
-├── scripts/
-│   ├── train.sh                   # 训练启动入口
-│   └── infer.sh                   # 推理启动入口
-├── tests/                         # 单元测试和可选真实数据测试
-├── requirements.txt
-└── README.md
-```
-
 ## 环境安装
 
 请先安装与本机 GPU 驱动匹配的 CUDA 版 PyTorch，再安装项目依赖：
