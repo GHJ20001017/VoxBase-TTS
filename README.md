@@ -73,3 +73,7 @@ bash scripts/infer.sh \
 ![推理音频结果 1](https://github.com/user-attachments/assets/723a7207-39e0-4a5c-8a06-0eae30ff4d0b)
 
 ![推理音频结果 2](https://github.com/user-attachments/assets/0d3ae8fb-2eda-407f-829d-1322ca7f340b)
+
+## ⚖️ 开源协议
+
+本项目采用 MIT License 开源协议。
