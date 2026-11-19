@@ -45,36 +45,6 @@ python -m pip install -r requirements.txt
 python -m pip check
 ```
 
-以 [configs/train.yaml](configs/train.yaml) 为起点，并根据实际机器修改数据路径和输出路径。仓库中的数据路径只是开发环境示例，不代表数据已经随代码发布。
-
-```yaml
-model:
-  pretrained_name_or_path: Qwen/Qwen3-0.6B
-  num_codebooks: 32
-  codebook_size: 2048
-  attention_backend: sdpa
-  freeze_backbone: false
-  gradient_checkpointing: true
-
-data:
-  train_dir: /path/to/tts_dataset/train
-  validation_dir: /path/to/tts_dataset/validation
-  test_dir: /path/to/tts_dataset/test
-  reference_prob: 0.8
-  num_workers: 2
-
-training:
-  output_dir: outputs/tts
-  device: cuda
-  precision: fp16
-  batch_size: 1
-  gradient_accumulation_steps: 16
-  epochs: 10
-  learning_rate: 0.0001
-  warmup_steps: 500
-  tensorboard: true
-```
-
 启动训练：
 
 ```bash
