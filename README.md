@@ -88,34 +88,3 @@ CUDA_VISIBLE_DEVICES=2 bash scripts/infer.sh \
 ```
 
 生成从全部 MASK 开始，逐轮填充尚未接受的位置；置信度达到阈值的位置会被固定，最后一轮会强制填完剩余位置。输出是整数 codec tokens，形状为 `[Q, T]`，不会自动解码成 WAV。帧数到时长的换算取决于数据所使用的 codec 帧率。
-
-## 测试
-
-在依赖完整的环境中运行：
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -v
-```
-
-测试覆盖：
-
-- Qwen3 双向注意力和特殊标记；
-- codec 数据读取、row-group 缓存和参考配对；
-- MASK 采样、codebook 预测和迭代生成；
-- 训练重放、AMP 溢出、checkpoint 和严格恢复；
-- tqdm 进度条、TensorBoard 和离线推理。
-
-真实数据测试需要显式设置 `TTS_TEST_DATA_DIR`，否则默认跳过。
-
-## 当前边界
-
-当前版本尚未提供：
-
-- 多卡 DDP 训练；
-- 自动音频时长预测；
-- WAV 编码和解码链路；
-- 完整的主观音质、自然度和可懂度评测；
-- 已验证的长序列完整模型显存基准；
-- 随仓库发布的数据集、预训练权重或训练输出。
-
-因此，小模型测试通过、loss 下降或单个 token 指标改善，都不能单独作为完整 TTS 系统质量验收。
