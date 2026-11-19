@@ -66,7 +66,8 @@ bash scripts/infer.sh \
   --num-frames 100 \
   --decoding-schedule cosine \
   --max-inference-steps 16 \
-  --output generated_codes_cosine.pt
+  --output generated_codes_cosine.pt \
+  --mimi-model /path/to/mimi-diagnostics
 ```
 
-输出为 `[8, T]` 的 codec tokens，包含生成码本和基本诊断信息，不会自动生成 WAV。
+同时生成 `[8, T]` codec tokens 和同名 WAV 文件。
