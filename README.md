@@ -67,3 +67,5 @@ bash scripts/infer.sh \
   --output generated_codes_cosine.pt \
   --mimi-model /path/to/mimi-diagnostics
 ```
+
+## 推理音频结果
