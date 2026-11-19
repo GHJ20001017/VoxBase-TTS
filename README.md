@@ -60,21 +60,13 @@ bash scripts/train.sh configs/train.yaml --epochs 2
 
 程序只支持单进程、单 GPU，不支持 DDP；不要使用 `torchrun` 启动。
 
-## 推理：生成、对比与解码
+## 推理：cosine 解码
 
-### 单条 codec token 推理
+### 生成 cosine codec tokens
 
-推理需要训练输出目录中的 checkpoint、`backbone_config.json` 和 `tokenizer/`。默认使用旧的置信度阈值解码；通过 `--decoding-schedule cosine` 可以启用按每个码本置信度排序、逐步填充的 cosine 解码：
+推理需要训练输出目录中的 checkpoint、`backbone_config.json` 和 `tokenizer/`。cosine 解码从全 MASK 的 `[8, T]` codec 网格开始，每一轮按照每个码本内部的置信度排序并填充对应 quota；已接受的 token 不会在后续轮次被覆盖。
 
 ```bash
-# 默认：旧 threshold 解码
-bash scripts/infer.sh \
-  --checkpoint outputs/tts/best.pt \
-  --text '你好，欢迎使用 VoxBase-TTS。' \
-  --num-frames 100 \
-  --output generated_codes.pt
-
-# cosine 解码：每轮按各码本的置信度排序并填充对应 quota
 bash scripts/infer.sh \
   --checkpoint outputs/tts/best.pt \
   --text '你好，欢迎使用 VoxBase-TTS。' \
@@ -84,9 +76,7 @@ bash scripts/infer.sh \
   --output generated_codes_cosine.pt
 ```
 
-推理从全 MASK 的 `[8, T]` codec 网格开始。`threshold` 会固定达到置信度阈值的位置，并在最后一轮强制填充剩余位置；`cosine` 会在每一轮按照每个码本内部的置信度排序，分别填充该码本的 quota。已接受的 token 不会在后续轮次被覆盖。
-
-可选参考条件必须同时提供 codes 文件和对齐文本：
+也可以加入参考文本和参考 codec tokens：
 
 ```bash
 CUDA_VISIBLE_DEVICES=2 bash scripts/infer.sh \
@@ -96,52 +86,23 @@ CUDA_VISIBLE_DEVICES=2 bash scripts/infer.sh \
   --reference-codes reference_codes.pt \
   --reference-text '这是参考音频对应的文本。' \
   --decoding-schedule cosine \
-  --confidence-threshold 0.8 \
   --max-inference-steps 16 \
   --device cuda --precision fp16 \
-  --output generated_with_reference.pt
+  --output generated_with_reference_cosine.pt
 ```
 
-输出 `.pt` 中包含 `codes`、`confidence`、`below_threshold`、`forced_mask`、剩余 MASK 历史、每码本剩余历史、实际 schedule steps 和解码方式等诊断字段。生成的 `codes` 是形状 `[8, T]` 的整数 codec tokens，不是 WAV。
+输出 `.pt` 中包含 `codes`、`confidence`、MASK 剩余历史、每码本剩余历史、实际 schedule steps 和解码方式等诊断字段。生成的 `codes` 是形状 `[8, T]` 的整数 codec tokens，不是 WAV。
 
-### 四条测试样本的旧解码与 cosine 对比
+### cosine codec tokens 重建 WAV
 
-此前抽取的样本应按 `sample_000.npz`、`sample_025.npz`、`sample_050.npz`、`sample_075.npz` 放在同一目录中。每个样本需要包含 `target`、`target_text`、`reference_same`、`reference_same_text`、`reference_other` 和 `reference_other_text` 等字段。
-
-```bash
-python scripts/evaluate_inference.py \
-  --checkpoint outputs/tts/best.pt \
-  --samples-dir /path/to/source/codes \
-  --output-dir outputs/inference_comparison \
-  --device cuda
-```
-
-脚本会加载 checkpoint，针对 `same`、`other`、`none` 三种参考条件分别运行旧的 `threshold` 解码和 `cosine` 解码，并保存：
-
-```text
-outputs/inference_comparison/
-├── codes/
-│   ├── sample_000.npz
-│   ├── sample_025.npz
-│   ├── sample_050.npz
-│   └── sample_075.npz
-├── metrics.jsonl       # 每次解码的准确率、置信度、MASK 历史和耗时
-├── settings.json
-└── complete.json
-```
-
-每个输出 NPZ 会保留原始样本字段，并新增 `generated_threshold_*` 与 `generated_cosine_*` 码本。若原始样本包含旧解码结果，脚本还会记录 threshold 结果的逐元素一致性。
-
-### codec tokens 重建 WAV
-
-需要本地的 Mimi codec 解码器目录和 `soundfile`：
+需要本地的 Mimi codec 解码器目录和 `soundfile`。将包含 `generated_cosine_*` 码本的 NPZ 文件放入同一目录后运行：
 
 ```bash
 python scripts/decode_codes.py \
-  --codes-dir outputs/inference_comparison/codes \
-  --output-dir outputs/inference_comparison/audio \
+  --codes-dir /path/to/cosine-codes \
+  --output-dir outputs/cosine_audio \
   --mimi-model /path/to/mimi-diagnostics \
   --sample-rate 24000
 ```
 
-脚本会读取目标码本、旧 threshold 结果和 cosine 结果，调用 `MimiModel` 重建 WAV，并生成包含时长、RMS、峰值和 SHA-256 的 `manifest.json`。生成的 WAV 和诊断输出属于本地实验产物，不应提交到仓库。
+脚本会使用 `MimiModel` 将 cosine codec tokens 重建为 PCM-16 WAV，并生成包含时长、RMS、峰值和 SHA-256 的 `manifest.json`。生成的 WAV 和诊断输出属于本地实验产物，不应提交到仓库。
