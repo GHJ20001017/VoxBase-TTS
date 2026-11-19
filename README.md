@@ -45,7 +45,7 @@ python -m pip install -r requirements.txt
 python -m pip check
 ```
 
-启动训练：
+## 启动训练
 
 ```bash
 bash scripts/train.sh configs/train.yaml
