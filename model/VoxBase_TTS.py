@@ -57,7 +57,7 @@ class VoxBaseTTS(nn.Module):
     audio while retaining an unmatched transcript.
     """
 
-    def __init__(self, backbone: BidirectionalQwen3, num_codebooks=32, codebook_size=2048):
+    def __init__(self, backbone: BidirectionalQwen3, num_codebooks=8, codebook_size=2048):
         super().__init__()
         if num_codebooks <= 0 or codebook_size <= 0:
             raise ValueError('Codec dimensions must be positive')

@@ -59,23 +59,23 @@ class TTSDatasetTest(unittest.TestCase):
         self.assertEqual(len(TTSDataset(self.root / 'shards')), 6)
 
     def test_split_directories_without_named_subdirectory_priority(self):
-        for codec, q in [('tts_8q', 8), ('tts_32q', 32)]:
-            for split in ['train', 'validation', 'test']:
-                root = self.root / codec / split
-                root.mkdir(parents=True)
-                rows = [dict(sample(i, 2, q), speaker_id='alice', dataset='corpus')
-                        for i in range(2)]
-                pq.write_table(pa.Table.from_pylist(rows), root / 'part.parquet')
-                dataset = TTSDataset(root, reference_prob=1)
-                self.assertEqual(len(dataset), 2)
-                self.assertEqual(dataset[0]['reference_sample_id'], '1')
-                self.assertEqual(dataset[0]['codes'].shape[0], q)
-                self.assertTrue(all(p.parent == root.resolve() for p in dataset.shards))
-        # An old-style named directory must never hide directly supplied files.
-        root = self.root / 'tts_32q' / 'train'
+        codec, q = 'tts_8q', 8
+        for split in ['train', 'validation', 'test']:
+            root = self.root / codec / split
+            root.mkdir(parents=True)
+            rows = [dict(sample(i, 2, q), speaker_id='alice', dataset='corpus')
+                    for i in range(2)]
+            pq.write_table(pa.Table.from_pylist(rows), root / 'part.parquet')
+            dataset = TTSDataset(root, reference_prob=1)
+            self.assertEqual(len(dataset), 2)
+            self.assertEqual(dataset[0]['reference_sample_id'], '1')
+            self.assertEqual(dataset[0]['codes'].shape[0], q)
+            self.assertTrue(all(p.parent == root.resolve() for p in dataset.shards))
+        # A named subdirectory must never hide directly supplied files.
+        root = self.root / 'tts_8q' / 'train'
         nested = root / 'shards'
         nested.mkdir()
-        pq.write_table(pa.Table.from_pylist([sample(10, 2, 32)]), nested / 'extra.parquet')
+        pq.write_table(pa.Table.from_pylist([sample(10, 2, 8)]), nested / 'extra.parquet')
         self.assertEqual(len(TTSDataset(root)), 3)
 
     def test_bulk_order_duplicates_and_single_group_read(self):

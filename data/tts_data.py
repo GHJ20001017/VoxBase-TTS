@@ -5,7 +5,7 @@ Example::
     from torch.utils.data import DataLoader
     from data.tts_data import TTSDataset, tts_collate_fn
 
-    dataset = TTSDataset('/home/gt/guhj/data/tts_32q/train')
+    dataset = TTSDataset('/gpu3/guhj/VoxBase-TTS/dataset/tts_8q/train')
     loader = DataLoader(dataset, batch_size=16, shuffle=True, num_workers=4,
                         collate_fn=tts_collate_fn, pin_memory=True)
     for batch in loader:
