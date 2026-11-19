@@ -32,6 +32,16 @@ class GenerationTest(unittest.TestCase):
                 self.assertTrue(((result['codes'] >= 0) & (result['codes'] < 8)).all())
                 self.assertFalse(result['confidence'].requires_grad)
 
+    def test_cosine_schedule_returns_per_codebook_diagnostics(self):
+        result = self.model.generate(self.tokenizer, 'hello', 3,
+                                     decoding_schedule='cosine',
+                                     max_inference_steps=4)
+        self.assertEqual(result['decoding_schedule'], 'cosine')
+        self.assertEqual(len(result['remaining_per_codebook_history']), result['num_steps'])
+        self.assertEqual(len(result['schedule_steps']), result['num_steps'])
+        self.assertEqual(tuple(result['codes'].shape), (3, 3))
+        self.assertTrue(((result['codes'] >= 0) & (result['codes'] < 8)).all())
+
     def test_actual_mask_rate_and_accepted_tokens_preserved(self):
         inputs, rates = [], []
 

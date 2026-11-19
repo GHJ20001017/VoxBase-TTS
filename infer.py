@@ -17,7 +17,7 @@ def _positive(value, name):
 
 def run(*, checkpoint, text, num_frames, output, reference_codes=None,
         reference_text=None, confidence_threshold=0.8, max_inference_steps=16,
-        device='cpu', precision='fp32'):
+        decoding_schedule='threshold', device='cpu', precision='fp32'):
     """Generate codec tokens from a trusted training checkpoint, entirely locally.
 
     The checkpoint is loaded with weights_only=False (pickle can execute code).
@@ -135,7 +135,8 @@ def run(*, checkpoint, text, num_frames, output, reference_codes=None,
             tokenizer, text, num_frames,
             reference_codes=reference.to(device) if reference is not None else None,
             reference_text=reference_text, confidence_threshold=confidence_threshold,
-            max_inference_steps=max_inference_steps, max_text_tokens=max_text_tokens,
+            max_inference_steps=max_inference_steps, decoding_schedule=decoding_schedule,
+            max_text_tokens=max_text_tokens,
             max_sequence_length=max_sequence_length)
     payload = {name: value.detach().cpu() if isinstance(value, torch.Tensor) else value
                for name, value in result.items()}
@@ -159,6 +160,8 @@ def main(argv=None):
     parser.add_argument('--reference-text', help='Aligned transcript; required together with --reference-codes')
     parser.add_argument('--confidence-threshold', type=float, default=0.8)
     parser.add_argument('--max-inference-steps', type=int, default=16)
+    parser.add_argument('--decoding-schedule', choices=['threshold', 'linear', 'cosine'], default='threshold',
+                        help='threshold keeps legacy decoding; cosine ranks each codebook by confidence')
     parser.add_argument('--device', default='cpu', help='cpu (default) or cuda[:index]')
     parser.add_argument('--precision', choices=['fp32', 'fp16', 'bf16'], default='fp32', help='fp16/bf16 require CUDA')
     args = parser.parse_args(argv)

@@ -146,15 +146,18 @@ class VoxBaseTTS(nn.Module):
     @torch.inference_mode()
     def generate(self, tokenizer, text, num_frames, *, reference_codes=None,
                  reference_text=None, confidence_threshold=0.8,
-                 max_inference_steps=16, max_text_tokens=512,
-                 max_sequence_length=40960):
-        """Greedy masked decoding of one utterance, without a codec decoder.
+                 max_inference_steps=16, decoding_schedule='threshold',
+                 max_text_tokens=512, max_sequence_length=40960):
+        """Decode from full MASK with threshold, linear, or cosine filling.
 
-        Accepted tokens stay fixed; only unresolved positions are re-predicted.
-        The last pass fills all remaining MASKs, marking forced positions even
-        when their confidence is below threshold. Scores are not calibrated
-        correctness probabilities. The caller's train/eval modes are restored.
+        ``threshold`` preserves the legacy confidence-acceptance behavior.
+        ``linear`` and ``cosine`` fill the highest-confidence unresolved
+        positions to a per-codebook quota each iteration. Accepted tokens are
+        never overwritten; confidence and per-codebook histories are returned
+        for diagnostics. Scores are not calibrated correctness probabilities.
         """
+        if decoding_schedule not in ('cosine', 'linear', 'threshold'):
+            raise ValueError('decoding_schedule must be cosine, linear, or threshold')
         for name, value in [('num_frames', num_frames),
                             ('max_inference_steps', max_inference_steps),
                             ('max_text_tokens', max_text_tokens),
@@ -185,7 +188,6 @@ class VoxBaseTTS(nn.Module):
             if not torch.all((reference_codes >= 0) & (reference_codes < self.codebook_size)):
                 raise ValueError('Reference must contain clean codec indices')
             reference_codes = reference_codes.to(device=device, dtype=torch.long)
-        # Check lengths before allocating a potentially large target tensor.
         text_length = len(tokenizer.encode(text, add_special_tokens=False))
         ref_text_length = (len(tokenizer.encode(reference_text, add_special_tokens=False))
                            if has_reference else 0)
@@ -205,12 +207,21 @@ class VoxBaseTTS(nn.Module):
                      text=[text], sample_id=['generation'])
         confidence = torch.zeros_like(codes[0], dtype=torch.float32)
         forced_mask = torch.zeros_like(codes[0], dtype=torch.bool)
-        history = []
+        history, per_codebook_history, schedule_steps = [], [], []
         modes = [(module, module.training) for module in self.modules()]
         self.eval()
         try:
             for iteration in range(max_inference_steps):
                 selected = codes[0] == self.audio_mask_id
+                if decoding_schedule != 'threshold':
+                    progress = (iteration + 1) / max_inference_steps
+                    fraction = (1 - math.cos(math.pi * 0.5 * progress)
+                                if decoding_schedule == 'cosine' else progress)
+                    desired = (num_frames if iteration == max_inference_steps - 1
+                               else min(num_frames, math.ceil(num_frames * fraction)))
+                    quotas = (desired - (~selected).sum(dim=1)).clamp_min(0)
+                    if not quotas.any():
+                        continue
                 rates = selected.float().mean().reshape(1)
                 features = self._target_features(
                     batch, tokenizer, codes, rates, max_text_tokens, max_sequence_length)[0]
@@ -226,16 +237,22 @@ class VoxBaseTTS(nn.Module):
                             raise FloatingPointError('Nonfinite generation logits')
                         scores, predictions = logits.softmax(-1).max(-1)
                     confidence[q, mask] = scores
-                    accepted = scores >= confidence_threshold
-                    if iteration == max_inference_steps - 1:
-                        forced_mask[q, mask] = ~accepted
-                        accepted = torch.ones_like(accepted)
-                    # Rejected predictions remain MASK; accepted input values
-                    # are never overwritten in later passes.
+                    if decoding_schedule == 'threshold':
+                        accepted = scores >= confidence_threshold
+                        if iteration == max_inference_steps - 1:
+                            forced_mask[q, mask] = ~accepted
+                            accepted = torch.ones_like(accepted)
+                    else:
+                        count = min(int(quotas[q]), scores.numel())
+                        accepted = torch.zeros_like(scores, dtype=torch.bool)
+                        order = scores.argsort(descending=True, stable=True)
+                        accepted[order[:count]] = True
                     codes[0, q, mask] = torch.where(
                         accepted, predictions, self.audio_mask_id)
                 remaining = int((codes == self.audio_mask_id).sum())
                 history.append(remaining)
+                per_codebook_history.append((codes[0] == self.audio_mask_id).sum(1).tolist())
+                schedule_steps.append(iteration + 1)
                 if remaining == 0:
                     break
         finally:
@@ -244,7 +261,11 @@ class VoxBaseTTS(nn.Module):
         return dict(codes=codes[0], confidence=confidence,
                     below_threshold=confidence < confidence_threshold,
                     forced_mask=forced_mask, num_steps=len(history),
-                    remaining_history=history)
+                    remaining_history=history,
+                    remaining_per_codebook_history=per_codebook_history,
+                    schedule_steps=schedule_steps, decoding_schedule=decoding_schedule,
+                    max_inference_steps=max_inference_steps,
+                    confidence_threshold=confidence_threshold)
 
     def forward(self, batch, tokenizer, mask_min=0.05, mask_max=1.0,
                 max_text_tokens=512, max_sequence_length=40960):
