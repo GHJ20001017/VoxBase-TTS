@@ -57,8 +57,6 @@ bash scripts/train.sh configs/train.yaml
 
 ### 生成 cosine codec tokens
 
-推理需要训练输出目录中的 checkpoint、`backbone_config.json` 和 `tokenizer/`。cosine 解码会从全 MASK 的 `[8, T]` codec 网格开始，按置信度逐步填充 token。
-
 ```bash
 bash scripts/infer.sh \
   --checkpoint outputs/tts/best.pt \
@@ -69,5 +67,3 @@ bash scripts/infer.sh \
   --output generated_codes_cosine.pt \
   --mimi-model /path/to/mimi-diagnostics
 ```
-
-同时生成 `[8, T]` codec tokens 和同名 WAV 文件。
