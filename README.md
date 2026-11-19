@@ -57,7 +57,7 @@ bash scripts/train.sh configs/train.yaml
 
 ### 生成 cosine codec tokens
 
-推理需要训练输出目录中的 checkpoint、`backbone_config.json` 和 `tokenizer/`。cosine 解码从全 MASK 的 `[8, T]` codec 网格开始，每一轮按照每个码本内部的置信度排序并填充对应 quota；已接受的 token 不会在后续轮次被覆盖。
+推理需要训练输出目录中的 checkpoint、`backbone_config.json` 和 `tokenizer/`。cosine 解码会从全 MASK 的 `[8, T]` codec 网格开始，按置信度逐步填充 token。
 
 ```bash
 bash scripts/infer.sh \
@@ -69,33 +69,4 @@ bash scripts/infer.sh \
   --output generated_codes_cosine.pt
 ```
 
-也可以加入参考文本和参考 codec tokens：
-
-```bash
-CUDA_VISIBLE_DEVICES=2 bash scripts/infer.sh \
-  --checkpoint outputs/tts/best.pt \
-  --text '这是要生成的目标文本。' \
-  --num-frames 100 \
-  --reference-codes reference_codes.pt \
-  --reference-text '这是参考音频对应的文本。' \
-  --decoding-schedule cosine \
-  --max-inference-steps 16 \
-  --device cuda --precision fp16 \
-  --output generated_with_reference_cosine.pt
-```
-
-输出 `.pt` 中包含 `codes`、`confidence`、MASK 剩余历史、每码本剩余历史、实际 schedule steps 和解码方式等诊断字段。生成的 `codes` 是形状 `[8, T]` 的整数 codec tokens，不是 WAV。
-
-### cosine codec tokens 重建 WAV
-
-需要本地的 Mimi codec 解码器目录和 `soundfile`。将包含 `generated_cosine_*` 码本的 NPZ 文件放入同一目录后运行：
-
-```bash
-python scripts/decode_codes.py \
-  --codes-dir /path/to/cosine-codes \
-  --output-dir outputs/cosine_audio \
-  --mimi-model /path/to/mimi-diagnostics \
-  --sample-rate 24000
-```
-
-脚本会使用 `MimiModel` 将 cosine codec tokens 重建为 PCM-16 WAV，并生成包含时长、RMS、峰值和 SHA-256 的 `manifest.json`。生成的 WAV 和诊断输出属于本地实验产物，不应提交到仓库。
+输出为 `[8, T]` 的 codec tokens，包含生成码本和基本诊断信息，不会自动生成 WAV。
