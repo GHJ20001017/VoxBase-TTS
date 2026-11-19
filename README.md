@@ -47,6 +47,13 @@ python -m pip check
 
 ## 启动训练
 
+先下载数据集：
+
+```bash
+modelscope download --dataset ghjghj1017/tts-8cb \
+  --local_dir /gpu3/guhj/VoxBase-TTS/dataset/tts_8q
+```
+
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 \
 NPROC_PER_NODE=2 \
