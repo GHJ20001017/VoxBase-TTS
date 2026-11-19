@@ -70,9 +70,11 @@ bash scripts/infer.sh \
 
 ## 推理音频结果
 
-![推理音频结果 1](https://github.com/user-attachments/assets/723a7207-39e0-4a5c-8a06-0eae30ff4d0b)
+![推理音频结果 1](https://github.com/user-attachments/assets/11df38c9-8baf-4bf5-9b14-4dd54b5818e1)
 
-![推理音频结果 2](https://github.com/user-attachments/assets/0d3ae8fb-2eda-407f-829d-1322ca7f340b)
+![推理音频结果 2](https://github.com/user-attachments/assets/723a7207-39e0-4a5c-8a06-0eae30ff4d0b)
+
+![推理音频结果 3](https://github.com/user-attachments/assets/0d3ae8fb-2eda-407f-829d-1322ca7f340b)
 
 ## ⚖️ 开源协议
 
