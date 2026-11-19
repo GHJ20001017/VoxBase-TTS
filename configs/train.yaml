@@ -1,5 +1,5 @@
 # Install requirements.txt using a CUDA-compatible PyTorch environment first.
-# Single-GPU starting point, not a measured VRAM guarantee. Sequence limits
+# Single-GPU starting point; set NPROC_PER_NODE for DDP. Sequence limits
 # are fail-fast guards, not data filters: long examples raise, never truncate.
 model:
   pretrained_name_or_path: /gpu3/guhj/models/Qwen3-0.6B

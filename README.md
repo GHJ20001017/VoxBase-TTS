@@ -45,10 +45,22 @@ python -m pip install -r requirements.txt
 python -m pip check
 ```
 
-## 启动训练
+单卡训练可直接运行：
 
 ```bash
 bash scripts/train.sh configs/train.yaml
+```
+
+多卡训练使用 DDP。设置 `NPROC_PER_NODE` 后，脚本会自动使用 `torchrun` 启动多个进程；每个进程绑定一张 GPU：
+
+```bash
+NPROC_PER_NODE=4 bash scripts/train.sh configs/train.yaml
+```
+
+也可以直接使用 `torchrun`：
+
+```bash
+torchrun --standalone --nproc_per_node=4 train.py --config configs/train.yaml
 ```
 
 也可以直接运行并覆盖 epoch 数：
@@ -58,7 +70,7 @@ python train.py --config configs/train.yaml
 bash scripts/train.sh configs/train.yaml --epochs 2
 ```
 
-程序只支持单进程、单 GPU，不支持 DDP；不要使用 `torchrun` 启动。
+程序支持单进程单卡和多进程 DDP 训练；DDP 模式下每个进程使用一张 GPU，checkpoint、验证指标和 TensorBoard 仅由 rank 0 写入。
 
 ## 推理：cosine 解码
 

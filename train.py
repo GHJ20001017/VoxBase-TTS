@@ -20,7 +20,9 @@ import tempfile
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Subset
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel
+from torch.utils.data import DataLoader, DistributedSampler, Subset
 from tqdm import tqdm
 import yaml
 
@@ -158,12 +160,17 @@ def _move(batch, device):
             for k, v in batch.items()}
 
 
-def _evaluate(model, tokenizer, dataset, c, device):
+def _evaluate(model, tokenizer, dataset, c, device, ddp=None):
+    ddp = ddp or dict(enabled=False, rank=0, main=True)
     state, was_training = _rng(), model.training
     e, t = c['evaluation'], c['training']
     try:
         _seed(e['seed'])
-        loader = DataLoader(dataset, batch_size=e['batch_size'], shuffle=False,
+        sampler = (DistributedSampler(dataset, num_replicas=ddp['world_size'], rank=ddp['rank'],
+                                      shuffle=False, drop_last=False)
+                   if ddp['enabled'] else None)
+        loader = DataLoader(dataset, batch_size=e['batch_size'],
+                            sampler=sampler, shuffle=False if sampler is not None else False,
                             num_workers=0, collate_fn=tts_collate_fn,
                             generator=torch.Generator().manual_seed(e['seed']))
         model.eval()
@@ -182,8 +189,9 @@ def _evaluate(model, tokenizer, dataset, c, device):
                 total_masked += int(result['num_masked'])
         if not total_masked:
             raise ValueError('Evaluation produced no masked tokens')
-        return dict(loss=total_loss / total_masked, accuracy=total_correct / total_masked,
-                    num_masked=total_masked)
+        metrics = dict(loss=total_loss / total_masked, accuracy=total_correct / total_masked,
+                       num_masked=total_masked)
+        return _ddp_reduce_metrics(metrics, device, ddp)
     finally:
         _restore(state)
         model.train(was_training)
@@ -215,9 +223,42 @@ def _log_metrics(writer, prefix, metrics, step):
         writer.flush()
 
 
+class _NullProgress:
+    def update(self, *_args, **_kwargs):
+        pass
+
+    def set_postfix(self, *_args, **_kwargs):
+        pass
+
+    def close(self):
+        pass
+
+
+def _ddp_context():
+    world_size = int(os.environ.get('WORLD_SIZE', '1'))
+    if world_size <= 1:
+        return dict(enabled=False, rank=0, local_rank=0, world_size=1, main=True)
+    if not dist.is_available():
+        raise RuntimeError('DDP requested but torch.distributed is unavailable')
+    if not dist.is_initialized():
+        local_rank = int(os.environ.get('LOCAL_RANK', '0'))
+        torch.cuda.set_device(local_rank)
+        dist.init_process_group(backend='nccl', init_method='env://')
+    return dict(enabled=True, rank=dist.get_rank(), local_rank=int(os.environ.get('LOCAL_RANK', '0')),
+                world_size=dist.get_world_size(), main=dist.get_rank() == 0)
+
+
+def _ddp_barrier(ddp):
+    if ddp['enabled']:
+        dist.barrier()
+
+
+def _ddp_cleanup(ddp):
+    if ddp['enabled'] and dist.is_initialized():
+        dist.destroy_process_group()
+
 def run(config: dict, resume: str | None = None, *, test_only=False):
-    if int(os.environ.get('WORLD_SIZE', '1')) > 1:
-        raise ValueError('DDP is unsupported: WORLD_SIZE must be 1')
+    ddp = _ddp_context()
     c = _validate(config, test_only)
     m, d, t = c['model'], c['data'], c['training']
     output = Path(t['output_dir']).expanduser().resolve()
@@ -241,7 +282,7 @@ def run(config: dict, resume: str | None = None, *, test_only=False):
             raise ValueError('Resume output_dir must be the checkpoint directory')
     elif test_only:
         raise ValueError('--test-only requires --resume')
-    elif output.exists() and (not output.is_dir() or any(output.iterdir())):
+    elif ddp['main'] and output.exists() and (not output.is_dir() or any(output.iterdir())):
         raise FileExistsError(f'Refusing to overwrite nonempty output: {output}')
     SummaryWriter = None
     if t['tensorboard'] and not test_only:
@@ -267,24 +308,32 @@ def run(config: dict, resume: str | None = None, *, test_only=False):
     if m['gradient_checkpointing']:
         backbone.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False})
     model = VoxBaseTTS(backbone, num_codebooks=m['num_codebooks'], codebook_size=m['codebook_size'])
-    device = torch.device(t['device'])
+    device = (torch.device(f'cuda:{ddp["local_rank"]}') if ddp['enabled']
+              else torch.device(t['device']))
     model = model.float().to(device)
     if checkpoint is not None:
         model.load_state_dict(checkpoint['model'])
+    if ddp['enabled']:
+        model = DistributedDataParallel(model, device_ids=[ddp['local_rank']],
+                                        output_device=ddp['local_rank'])
     def dataset(split):
         result = TTSDataset(d[split + '_dir'], cache_size=d['cache_size'], reference_prob=d['reference_prob'])
         if not len(result):
             raise ValueError(f'{split} dataset is empty')
         return result
     if test_only:
-        metrics = _evaluate(model, tokenizer, dataset('test'), c, device)
-        _print_evaluation('Test', metrics, checkpoint['global_step'])
-        return {'global_step': checkpoint['global_step'], 'test': metrics}
+        metrics = _evaluate(model, tokenizer, dataset('test'), c, device, ddp)
+        if ddp['main']:
+            _print_evaluation('Test', metrics, checkpoint['global_step'])
+        result = {'global_step': checkpoint['global_step'], 'test': metrics}
+        _ddp_cleanup(ddp)
+        return result
     train_data, validation_data = dataset('train'), dataset('validation')
     optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad],
                                  lr=t['learning_rate'], weight_decay=t['weight_decay'],
                                  betas=(t['adam_beta1'], t['adam_beta2']), eps=t['adam_epsilon'])
-    batches_per_epoch = math.ceil(len(train_data) / t['batch_size'])
+    samples_per_rank = math.ceil(len(train_data) / ddp['world_size'])
+    batches_per_epoch = math.ceil(samples_per_rank / t['batch_size'])
     updates_per_epoch = math.ceil(batches_per_epoch / t['gradient_accumulation_steps'])
     total_updates = updates_per_epoch * t['epochs']
 
@@ -307,28 +356,35 @@ def run(config: dict, resume: str | None = None, *, test_only=False):
         best, resume_rng = checkpoint['best_validation_loss'], checkpoint['rng']
         saved_order = checkpoint['data_order']
     else:
-        output.mkdir(parents=True, exist_ok=True)
-        backbone.config.to_json_file(str(output / 'backbone_config.json'))
-        tokenizer.save_pretrained(output / 'tokenizer')
+        if ddp['main']:
+            output.mkdir(parents=True, exist_ok=True)
+            backbone.config.to_json_file(str(output / 'backbone_config.json'))
+            tokenizer.save_pretrained(output / 'tokenizer')
+        _ddp_barrier(ddp)
     if epoch >= t['epochs'] or (epoch == t['epochs'] - 1 and cursor == batches_per_epoch):
-        return {'global_step': step, 'best_validation_loss': best}
+        result = {'global_step': step, 'best_validation_loss': best}
+        _ddp_cleanup(ddp)
+        return result
     writer = (SummaryWriter(log_dir=str(output / 'tensorboard'),
                             purge_step=step + 1 if checkpoint is not None else None)
-              if SummaryWriter is not None else None)
+              if SummaryWriter is not None and ddp['main'] else None)
 
     progress = None
     try:
         def save(order, improved=False):
-            payload = dict(model=model.state_dict(), optimizer=optimizer.state_dict(),
-                           scheduler=scheduler.state_dict(), scaler=scaler.state_dict(),
-                           global_step=step, epoch=epoch, batch_cursor=cursor, config=c,
-                           rng=_rng(), epoch_start_rng=epoch_start_rng, data_order=order,
-                           best_validation_loss=best)
-            _atomic_save(payload, output / 'last.pt')
-            if improved:
-                _atomic_save(payload, output / 'best.pt')
-            if writer is not None:
-                writer.flush()
+            if ddp['main']:
+                payload = dict(model=(model.module if ddp['enabled'] else model).state_dict(),
+                               optimizer=optimizer.state_dict(), scheduler=scheduler.state_dict(),
+                               scaler=scaler.state_dict(), global_step=step, epoch=epoch,
+                               batch_cursor=cursor, config=c, rng=_rng(),
+                               epoch_start_rng=epoch_start_rng, data_order=order,
+                               best_validation_loss=best)
+                _atomic_save(payload, output / 'last.pt')
+                if improved:
+                    _atomic_save(payload, output / 'best.pt')
+                if writer is not None:
+                    writer.flush()
+            _ddp_barrier(ddp)
         model.train()
         consecutive_overflows = 0
         last_evaluated_step = None
@@ -338,8 +394,12 @@ def run(config: dict, resume: str | None = None, *, test_only=False):
                 if order != saved_order:
                     raise ValueError('Dataset size/order changed since checkpoint')
                 saved_order = None
-            # Independent loader RNG prevents iterator creation consuming model RNG.
-            loader = DataLoader(Subset(train_data, order), batch_size=t['batch_size'],
+            subset = Subset(train_data, order)
+            sampler = (DistributedSampler(subset, num_replicas=ddp['world_size'], rank=ddp['rank'],
+                                          shuffle=False, drop_last=False)
+                       if ddp['enabled'] else None)
+            loader = DataLoader(subset, batch_size=t['batch_size'], sampler=sampler,
+                                shuffle=False if sampler is not None else False,
                                 num_workers=d['num_workers'], collate_fn=tts_collate_fn,
                                 worker_init_fn=_worker_seed, persistent_workers=False,
                                 pin_memory=device.type == 'cuda',
@@ -356,15 +416,17 @@ def run(config: dict, resume: str | None = None, *, test_only=False):
             if resume_rng is not None:
                 _restore(resume_rng)
                 resume_rng = None
-            progress = tqdm(total=len(loader), initial=cursor,
-                            desc=f'Epoch {epoch + 1}/{t["epochs"]}', unit='batch',
-                            dynamic_ncols=True, mininterval=1.0)
+            progress = (tqdm(total=len(loader), initial=cursor,
+                              desc=f'Epoch {epoch + 1}/{t["epochs"]}', unit='batch',
+                              dynamic_ncols=True, mininterval=1.0)
+                       if ddp['main'] else _NullProgress())
             progress.set_postfix(step=step, lr=f'{optimizer.param_groups[0]["lr"]:.2e}',
                                  refresh=False)
             while cursor < len(loader):
                 group_size = min(t['gradient_accumulation_steps'], len(loader) - cursor)
                 optimizer.zero_grad(set_to_none=True)
                 loss_sum = masked = correct = 0
+                backward_denominator = None
                 # Sum token losses, then normalize gradients once over the complete
                 # accumulation group, including a partial final group and variable T.
                 for _ in range(group_size):
@@ -373,19 +435,35 @@ def run(config: dict, resume: str | None = None, *, test_only=False):
                         result = model(_move(batch, device), tokenizer, **c['masking'])
                     if not torch.isfinite(result['loss_sum']).all():
                         raise FloatingPointError(f'Nonfinite training loss at step {step}')
-                    if masked == 0:
-                        backward_denominator = max(1, int(result['num_masked'])) * group_size
+                    local_masked = int(result['num_masked'])
+                    global_masked = local_masked
+                    if ddp['enabled']:
+                        count = torch.tensor(local_masked, dtype=torch.long, device=device)
+                        dist.all_reduce(count, op=dist.ReduceOp.SUM)
+                        global_masked = int(count)
+                    if backward_denominator is None:
+                        backward_denominator = max(1, global_masked) * group_size / ddp['world_size']
                     scaler.scale(result['loss_sum'] / backward_denominator).backward()
                     loss_sum += float(result['loss_sum'].detach())
-                    masked += int(result['num_masked'])
+                    masked += local_masked
                     correct += int(result['num_correct'])
                     cursor += 1
                     progress.update(1)
                 if masked <= 0:
                     raise ValueError('Accumulation group has no masked tokens')
+                if ddp['enabled']:
+                    total = torch.tensor(masked, dtype=torch.long, device=device)
+                    dist.all_reduce(total, op=dist.ReduceOp.SUM)
+                    masked_total = int(total)
+                else:
+                    masked_total = masked
                 scaler.unscale_(optimizer)
                 nonfinite = any(not torch.isfinite(p.grad).all() for p in model.parameters()
                                 if p.grad is not None)
+                if ddp['enabled']:
+                    flag = torch.tensor(int(nonfinite), dtype=torch.long, device=device)
+                    dist.all_reduce(flag, op=dist.ReduceOp.MAX)
+                    nonfinite = bool(flag)
                 if nonfinite:
                     if not scaler.is_enabled():
                         raise FloatingPointError(f'Nonfinite gradients at step {step}')
@@ -395,34 +473,38 @@ def run(config: dict, resume: str | None = None, *, test_only=False):
                     scaler.update()
                     optimizer.zero_grad(set_to_none=True)
                     consecutive_overflows += 1
-                    tqdm.write(f'AMP overflow | step {step:,} | update skipped | '
-                               f'scale {scaler.get_scale():.0f}')
+                    if ddp['main']:
+                        tqdm.write(f'AMP overflow | step {step:,} | update skipped | '
+                                   f'scale {scaler.get_scale():.0f}')
                     if consecutive_overflows >= 32:
                         raise FloatingPointError('32 consecutive AMP gradient overflows')
                     continue
                 consecutive_overflows = 0
+                training_metrics = _ddp_reduce_metrics(
+                    dict(loss=loss_sum / masked, accuracy=correct / masked, num_masked=masked),
+                    device, ddp)
                 for parameter in model.parameters():
                     if parameter.grad is not None:
-                        parameter.grad.mul_(backward_denominator / masked)
+                        parameter.grad.mul_(backward_denominator * ddp['world_size'] / masked_total)
                 norm = torch.nn.utils.clip_grad_norm_(model.parameters(), t['max_grad_norm'], error_if_nonfinite=True)
                 learning_rate = optimizer.param_groups[0]['lr']
                 scaler.step(optimizer)
                 scaler.update()
                 scheduler.step()
                 step += 1
-                progress.set_postfix(loss=f'{loss_sum / masked:.4f}',
-                                     acc=f'{100 * correct / masked:.3f}%',
+                progress.set_postfix(loss=f'{training_metrics["loss"]:.4f}',
+                                     acc=f'{100 * training_metrics["accuracy"]:.3f}%',
                                      lr=f'{learning_rate:.2e}', step=step,
                                      grad=f'{float(norm):.3f}', refresh=False)
                 if step % t['log_every'] == 0 or step == 1:
-                    training_metrics = dict(loss=loss_sum / masked, accuracy=correct / masked,
-                                            grad_norm=float(norm), learning_rate=learning_rate,
-                                            epoch=epoch, num_masked=masked)
+                    training_metrics.update(grad_norm=float(norm), learning_rate=learning_rate,
+                                            epoch=epoch)
                     _log_metrics(writer, 'train', training_metrics, step)
                 improved = False
                 if step % c['evaluation']['every_steps'] == 0:
-                    metrics = _evaluate(model, tokenizer, validation_data, c, device)
-                    _print_evaluation('Validation', metrics, step)
+                    metrics = _evaluate(model, tokenizer, validation_data, c, device, ddp)
+                    if ddp['main']:
+                        _print_evaluation('Validation', metrics, step)
                     _log_metrics(writer, 'validation', metrics, step)
                     last_evaluated_step = step
                     improved = metrics['loss'] < best
@@ -432,8 +514,9 @@ def run(config: dict, resume: str | None = None, *, test_only=False):
             # Always evaluate/save completed epochs, including a skipped final AMP update.
             improved = False
             if last_evaluated_step != step:
-                metrics = _evaluate(model, tokenizer, validation_data, c, device)
-                _print_evaluation('Validation', metrics, step)
+                metrics = _evaluate(model, tokenizer, validation_data, c, device, ddp)
+                if ddp['main']:
+                    _print_evaluation('Validation', metrics, step)
                 _log_metrics(writer, 'validation', metrics, step)
                 last_evaluated_step = step
                 improved = metrics['loss'] < best
@@ -443,7 +526,9 @@ def run(config: dict, resume: str | None = None, *, test_only=False):
             progress = None
             epoch += 1
             cursor = 0
-        return {'global_step': step, 'best_validation_loss': best}
+        result = {'global_step': step, 'best_validation_loss': best}
+        _ddp_cleanup(ddp)
+        return result
     finally:
         if progress is not None:
             progress.close()

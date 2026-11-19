@@ -263,8 +263,10 @@ class TrainingTest(unittest.TestCase):
         c['data']['validation_dir'] = c['data']['train_dir']
         with self.assertRaisesRegex(ValueError, 'disjoint'):
             train._validate(c)
-        with patch.dict('os.environ', {'WORLD_SIZE': '2'}), self.assertRaisesRegex(ValueError, 'DDP'):
-            train.run(self.config)
+        with patch.dict('os.environ', {'WORLD_SIZE': '1'}, clear=False):
+            context = train._ddp_context()
+        self.assertFalse(context['enabled'])
+        self.assertEqual(context['world_size'], 1)
 
 
 if __name__ == '__main__':

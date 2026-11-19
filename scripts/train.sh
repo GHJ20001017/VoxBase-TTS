@@ -10,4 +10,7 @@ if [[ $# -gt 0 && "$1" != -* ]]; then
   shift
 fi
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+if [[ -n "${NPROC_PER_NODE:-}" ]]; then
+  exec torchrun --standalone --nproc_per_node="$NPROC_PER_NODE" "$ROOT/train.py" --config "$CONFIG" "$@"
+fi
 exec "$PYTHON_BIN" "$ROOT/train.py" --config "$CONFIG" "$@"
