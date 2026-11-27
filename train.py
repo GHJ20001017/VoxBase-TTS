@@ -248,6 +248,17 @@ def _ddp_context():
                 world_size=dist.get_world_size(), main=dist.get_rank() == 0)
 
 
+def _ddp_reduce_metrics(metrics, device, ddp):
+    if not ddp['enabled']:
+        return metrics
+    count = metrics['num_masked']
+    totals = torch.tensor([metrics['loss'] * count, metrics['accuracy'] * count, count],
+                          dtype=torch.float64, device=device)
+    dist.all_reduce(totals, op=dist.ReduceOp.SUM)
+    loss_sum, correct, count = totals.tolist()
+    return dict(loss=loss_sum / count, accuracy=correct / count, num_masked=int(count))
+
+
 def _ddp_barrier(ddp):
     if ddp['enabled']:
         dist.barrier()
@@ -257,32 +268,47 @@ def _ddp_cleanup(ddp):
     if ddp['enabled'] and dist.is_initialized():
         dist.destroy_process_group()
 
-def run(config: dict, resume: str | None = None, *, test_only=False):
+def run(config: dict, resume: str | None = None, *, init_from: str | None = None,
+        test_only=False):
+    if resume and init_from:
+        raise ValueError('--resume and --init-from are mutually exclusive')
     ddp = _ddp_context()
     c = _validate(config, test_only)
     m, d, t = c['model'], c['data'], c['training']
     output = Path(t['output_dir']).expanduser().resolve()
     checkpoint = None
-    if resume:
-        source = Path(resume).expanduser().resolve()
-        checkpoint = torch.load(source, map_location='cpu', weights_only=False)
-        # These fields change replay or model semantics; reject silent divergence.
-        old = checkpoint['config']
-        if 'epochs' not in old['training']:
-            raise ValueError('Resume requires an epoch-based checkpoint; old max_steps checkpoints are unsupported')
-        for section in ['model', 'data', 'masking']:
-            if c[section] != old[section]:
-                raise ValueError(f'Resume requires unchanged {section} configuration')
-        for key in ['seed', 'batch_size', 'gradient_accumulation_steps', 'precision', 'device',
-                    'learning_rate', 'weight_decay', 'adam_beta1', 'adam_beta2',
-                    'adam_epsilon', 'warmup_steps', 'max_grad_norm', 'epochs']:
-            if t[key] != old['training'][key]:
-                raise ValueError(f'Resume requires unchanged {key}')
-        if output != source.parent:
-            raise ValueError('Resume output_dir must be the checkpoint directory')
+    weight_checkpoint = None
+    source_output = None
+    if resume or init_from:
+        source = Path(resume or init_from).expanduser().resolve()
+        loaded = torch.load(source, map_location='cpu', weights_only=False)
+        source_output = source.parent
+        if resume:
+            checkpoint = loaded
+            # These fields change replay or model semantics; reject silent divergence.
+            old = checkpoint['config']
+            if 'epochs' not in old['training']:
+                raise ValueError('Resume requires an epoch-based checkpoint; old max_steps checkpoints are unsupported')
+            for section in ['model', 'data', 'masking']:
+                if c[section] != old[section]:
+                    raise ValueError(f'Resume requires unchanged {section} configuration')
+            for key in ['seed', 'batch_size', 'gradient_accumulation_steps', 'precision', 'device',
+                        'learning_rate', 'weight_decay', 'adam_beta1', 'adam_beta2',
+                        'adam_epsilon', 'warmup_steps', 'max_grad_norm', 'epochs']:
+                if t[key] != old['training'][key]:
+                    raise ValueError(f'Resume requires unchanged {key}')
+            if output != source.parent:
+                raise ValueError('Resume output_dir must be the checkpoint directory')
+        else:
+            weight_checkpoint = loaded
+            old = weight_checkpoint.get('config', {})
+            if old.get('model') != c['model']:
+                raise ValueError('Weights-only initialization requires unchanged model configuration')
     elif test_only:
         raise ValueError('--test-only requires --resume')
-    elif ddp['main'] and output.exists() and (not output.is_dir() or any(output.iterdir())):
+    if test_only and checkpoint is None:
+        raise ValueError('--test-only requires --resume')
+    if checkpoint is None and ddp['main'] and output.exists() and (not output.is_dir() or any(output.iterdir())):
         raise FileExistsError(f'Refusing to overwrite nonempty output: {output}')
     SummaryWriter = None
     if t['tensorboard'] and not test_only:
@@ -292,16 +318,15 @@ def run(config: dict, resume: str | None = None, *, test_only=False):
             raise ImportError('TensorBoard logging is enabled. Install tensorboard '
                               'or set training.tensorboard: false.') from error
     _seed(t['seed'])
-    if checkpoint is None:
+    if checkpoint is None and weight_checkpoint is None:
         backbone, tokenizer = BidirectionalQwen3.from_pretrained_with_tokenizer(
             m['pretrained_name_or_path'], attn_implementation=m['attention_backend'])
-        backbone.register_tts_tokens(tokenizer)
     else:
         from transformers import AutoTokenizer, Qwen3Config
-        backbone_config = Qwen3Config.from_json_file(str(output / 'backbone_config.json'))
+        backbone_config = Qwen3Config.from_json_file(str(source_output / 'backbone_config.json'))
         backbone_config._attn_implementation = m['attention_backend']
         backbone = BidirectionalQwen3(backbone_config)
-        tokenizer = AutoTokenizer.from_pretrained(output / 'tokenizer', local_files_only=True)
+        tokenizer = AutoTokenizer.from_pretrained(source_output / 'tokenizer', local_files_only=True)
         backbone.register_tts_tokens(tokenizer)
     if m['freeze_backbone']:
         backbone.requires_grad_(False)
@@ -313,6 +338,8 @@ def run(config: dict, resume: str | None = None, *, test_only=False):
     model = model.float().to(device)
     if checkpoint is not None:
         model.load_state_dict(checkpoint['model'])
+    elif weight_checkpoint is not None:
+        model.load_state_dict(weight_checkpoint['model'])
     if ddp['enabled']:
         model = DistributedDataParallel(model, device_ids=[ddp['local_rank']],
                                         output_device=ddp['local_rank'])
@@ -539,14 +566,17 @@ def run(config: dict, resume: str | None = None, *, test_only=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', default='configs/train.yaml')
-    parser.add_argument('--resume', default=None)
+    initialization = parser.add_mutually_exclusive_group()
+    initialization.add_argument('--resume', default=None, help='Restore the full training state')
+    initialization.add_argument('--init-from', default=None,
+                                help='Load model weights only and start a new training run')
     parser.add_argument('--epochs', type=int)
     parser.add_argument('--test-only', action='store_true')
     args = parser.parse_args()
     config = load_yaml(args.config)
     if args.epochs is not None:
         config.setdefault('training', {})['epochs'] = args.epochs
-    run(config, args.resume, test_only=args.test_only)
+    run(config, args.resume, init_from=args.init_from, test_only=args.test_only)
 
 
 if __name__ == '__main__':

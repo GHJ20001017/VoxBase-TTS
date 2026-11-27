@@ -1,0 +1,53 @@
+# Start from a trained TTS checkpoint with --init-from (not --resume).
+# Model, masking and batching match train.yaml; use a fresh output directory.
+model:
+  pretrained_name_or_path: /gpu3/guhj/models/Qwen3-0.6B
+  attention_backend: sdpa
+  num_codebooks: 8
+  codebook_size: 2048
+  freeze_backbone: false
+  gradient_checkpointing: true
+
+data:
+  train_dir: dataset/tts_8cb_hq/train
+  validation_dir: dataset/tts_8cb_hq/validation
+  test_dir: dataset/tts_8cb_hq/test
+  cache_size: 1
+  reference_prob: 0.8
+  num_workers: 2
+
+training:
+  output_dir: outputs/tts_hq
+  tensorboard: true
+  device: cuda
+  precision: fp16
+  seed: 42
+  batch_size: 128
+  gradient_accumulation_steps: 1
+  epochs: 1
+  learning_rate: 0.00002 # one tenth of the base training peak LR
+  weight_decay: 0.01
+  adam_beta1: 0.9
+  adam_beta2: 0.95
+  adam_epsilon: 0.00000001
+  warmup_steps: 100
+  max_grad_norm: 1.0
+  log_every: 10
+  save_every: 500
+
+masking:
+  mask_min: 0.05
+  mask_max: 1.0
+  max_text_tokens: 512
+  max_sequence_length: 40960
+
+evaluation:
+  every_steps: 500
+  batch_size: 1
+  max_batches: 50
+  seed: 1234
+
+# First launch:
+# bash scripts/train.sh configs/train_hq.yaml --init-from outputs/tts/best.pt
+# Resume an interrupted HQ run with unchanged configuration:
+# bash scripts/train.sh configs/train_hq.yaml --resume outputs/tts_hq/last.pt

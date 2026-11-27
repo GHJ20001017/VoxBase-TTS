@@ -137,6 +137,91 @@ class TrainingTest(unittest.TestCase):
         other['training']['epochs'] = 1
         self.assertEqual(train.run(other)['global_step'], 2)
 
+    def test_weights_only_continuation_starts_a_fresh_run(self):
+        train.run(self.config)
+        source = Path(self.config['training']['output_dir']) / 'last.pt'
+        baseline = torch.load(source, weights_only=False)
+        hq = deepcopy(self.config)
+        hq_train = self.root / 'hq_train'
+        hq_train.mkdir()
+        pq.write_table(pq.read_table(self.root / 'train' / 'part.parquet'),
+                       hq_train / 'part.parquet')
+        hq['data']['train_dir'] = str(hq_train)
+        hq['training'].update(output_dir=str(self.root / 'hq_run'), epochs=1,
+                              learning_rate=0.00002, warmup_steps=0)
+        original_step = torch.optim.AdamW.step
+        updates = []
+
+        def check_step(optimizer, *args, **kwargs):
+            if not updates:
+                self.assertFalse(optimizer.state)
+                self.assertEqual(optimizer.param_groups[0]['lr'], 0.00002)
+            updates.append(True)
+            return original_step(optimizer, *args, **kwargs)
+
+        from model.VoxBase_TTS import VoxBaseTTS
+        original_forward = VoxBaseTTS.forward
+        checked_weights = []
+
+        def check_forward(model, *args, **kwargs):
+            if not checked_weights:
+                for name, value in model.state_dict().items():
+                    torch.testing.assert_close(value, baseline['model'][name], rtol=0, atol=0)
+                checked_weights.append(True)
+            return original_forward(model, *args, **kwargs)
+
+        with patch.object(torch.optim.AdamW, 'step', new=check_step), \
+                patch.object(VoxBaseTTS, 'forward', new=check_forward), \
+                patch.object(torch.optim.AdamW, 'load_state_dict',
+                             side_effect=AssertionError('must not restore optimizer')):
+            result = train.run(hq, init_from=str(source))
+        self.assertTrue(checked_weights)
+        self.assertEqual(len(updates), 2)
+        self.assertEqual(result['global_step'], 2)
+        checkpoint = torch.load(self.root / 'hq_run' / 'last.pt', weights_only=False)
+        self.assertEqual(checkpoint['epoch'], 0)
+        self.assertEqual(checkpoint['scheduler']['last_epoch'], 2)
+        self.assertEqual(checkpoint['config']['data']['train_dir'], str(hq_train))
+        self.assertTrue((self.root / 'hq_run' / 'tokenizer').is_dir())
+        self.assertTrue((self.root / 'hq_run' / 'backbone_config.json').is_file())
+        for name, value in torch.load(source, weights_only=False)['model'].items():
+            torch.testing.assert_close(value, baseline['model'][name], rtol=0, atol=0)
+        with self.assertRaises(FileExistsError):
+            train.run(hq, init_from=str(source))
+        with self.assertRaisesRegex(ValueError, 'mutually exclusive'):
+            train.run(hq, str(source), init_from=str(source))
+        with self.assertRaisesRegex(ValueError, '--test-only requires --resume'):
+            train.run(hq, init_from=str(source), test_only=True)
+        incompatible = deepcopy(hq)
+        incompatible['model']['codebook_size'] = 16
+        with self.assertRaisesRegex(ValueError, 'unchanged model'):
+            train.run(incompatible, init_from=str(source))
+        self.assertEqual(train.run(hq, str(self.root / 'hq_run' / 'last.pt'))['global_step'], 2)
+
+    def test_ddp_metrics_are_weighted_by_masked_tokens(self):
+        metrics = dict(loss=2.0, accuracy=0.5, num_masked=4)
+        self.assertEqual(train._ddp_reduce_metrics(metrics, 'cpu', dict(enabled=False)),
+                         metrics)
+
+        def add_other_rank(totals, op):
+            torch.testing.assert_close(totals, torch.tensor([8.0, 2.0, 4.0],
+                                                            dtype=torch.float64))
+            totals.add_(torch.tensor([18.0, 6.0, 6.0], dtype=torch.float64))
+
+        with patch('train.dist.all_reduce', side_effect=add_other_rank) as reduce:
+            reduced = train._ddp_reduce_metrics(metrics, 'cpu', dict(enabled=True))
+        reduce.assert_called_once()
+        self.assertEqual(reduced, dict(loss=2.6, accuracy=0.8, num_masked=10))
+
+    def test_cli_forwards_weights_only_initialization(self):
+        with patch('sys.argv', ['train.py', '--config', 'configs/train_hq.yaml',
+                                '--init-from', 'outputs/tts/best.pt']), \
+                patch('train.load_yaml', return_value=self.config), \
+                patch('train.run') as run:
+            train.main()
+        run.assert_called_once_with(self.config, None, init_from='outputs/tts/best.pt',
+                                    test_only=False)
+
     def test_amp_overflow_skips_update_without_advancing_scheduler(self):
         from model.VoxBase_TTS import VoxBaseTTS
 

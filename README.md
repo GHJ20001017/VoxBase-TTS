@@ -51,8 +51,10 @@ python -m pip check
 
 ```bash
 modelscope download --dataset ghjghj1017/tts-8cb \
-  --local_dir /gpu3/guhj/VoxBase-TTS/dataset/tts_8q
+  --local_dir dataset/tts_8q
 ```
+
+启动正式训练：
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 \
@@ -83,13 +85,33 @@ bash scripts/infer.sh \
 
 ![推理音频结果 3](https://github.com/user-attachments/assets/0d3ae8fb-2eda-407f-829d-1322ca7f340b)
 
+## 高质量数据持续训练
+
+完成基础训练后，可以从已有 TTS 模型权重出发，在高质量数据集上以较低学习率继续训练 1 个 epoch。这一阶段仍使用原来的 Masked Codec Token 训练目标。
+
+先在项目根目录下载高质量数据集：
+
+```bash
+modelscope download --dataset ghjghj1017/tts_8cb_hq \
+  --local_dir dataset/tts_8cb_hq
+```
+
+沿用原来的训练脚本，切换到 `configs/train_hq.yaml`，并指定基础训练得到的 checkpoint：
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 \
+NPROC_PER_NODE=2 \
+bash scripts/train.sh configs/train_hq.yaml \
+  --init-from outputs/tts/best.pt
+```
+
 ## 项目总结
 
 目前，VoxBase-TTS 已经能够通过逐步去噪的 Masked Codec Token 解码方式，将文本生成对应的语音；同时也能够在一定程度上引入参考音频及其文本条件，用于音色克隆和语音生成控制。项目仍有以下方向需要继续完善：
 
 1. **目标帧数预测**：当前在测试集上可以直接获得文本对应的目标音频帧数，而真实推理时仍需要手动指定帧数。后续需要加入目标音频帧数估计模型，否则语速、停顿和整体时长可能难以准确控制。
 2. **音质与码本容量**：当前模型使用 8 个码本，受离散表示容量限制，音频重建时仍可能损失部分细节，表现为一定程度的模糊。增加码本数量有望保留更多音频信息、提升重建音质，但也会带来更高的显存开销和训练难度。
-3. **后训练与性能优化**：后续还需要引入后训练等优化方法，进一步提升生成质量、稳定性以及参考音频条件下的音色一致性。
+3. **后训练与性能优化**：后续还需要引入后训练、扩充训练数据等优化方法，进一步提升生成质量、稳定性以及参考音频条件下的音色一致性。当前项目使用的训练数据总量约为 3,193.81 小时；在模型参数规模相近的情况下，一些表现较好的语音模型使用了十万甚至百万小时级别的训练数据，因此增加更多高质量、多样化的语音数据，也可能进一步提升模型性能。
 
 ## ⚖️ 开源协议
 
